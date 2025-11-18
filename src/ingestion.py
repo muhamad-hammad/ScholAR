@@ -8,20 +8,40 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 
-def load_documents(pdf_path: str) -> List[Document]:
+def load_documents(pdf_path: str, prefer_dedoc: bool = True) -> List[Document]:
     """
     Load and parse PDF research documents with structure preservation.
 
-    Intent and implementation guidance (comment-only):
-    - Choose either DedocFileLoader (preferred for table-preserving extraction)
-      or UnstructuredPDFLoader depending on system dependencies availability.
-    - Ensure table extraction is enabled (e.g., Dedoc with_tables=True) so that
-      tables are converted into structured text or JSON blocks that downstream
-      chunking can handle.
-    - Return a list of LangChain Document objects including metadata about page,
-      section headings, and any extracted table content.
+    This implementation prefers Dedoc (table-preserving). If Dedoc fails,
+    it falls back to Unstructured.
     """
-    pass
+    # Try Dedoc first for better table and layout preservation
+    if prefer_dedoc:
+        try:
+            loader = DedocFileLoader(pdf_path, with_tables=True)
+            docs = loader.load()
+            # Ensure metadata has a source field for provenance
+            for d in docs:
+                if not getattr(d, "metadata", None):
+                    d.metadata = {"source": pdf_path}
+                else:
+                    d.metadata.setdefault("source", pdf_path)
+            return docs
+        except FileNotFoundError:
+            raise
+        except Exception:
+            # Dedoc not available or failed; fall back to Unstructured
+            pass
+
+    # Fallback to UnstructuredPDFLoader
+    loader = UnstructuredPDFLoader(pdf_path)
+    docs = loader.load()
+    for d in docs:
+        if not getattr(d, "metadata", None):
+            d.metadata = {"source": pdf_path}
+        else:
+            d.metadata.setdefault("source", pdf_path)
+    return docs
 
 
 def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap: int = 128) -> TokenTextSplitter:
@@ -36,7 +56,22 @@ def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap
     - If the HF tokenizer is unavailable, fallback to RecursiveCharacterTextSplitter
       with conservative chunk sizes.
     """
-    pass
+    # Lazy import tokenizer to avoid network/IO at module import time
+    try:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
+        # Use the HF-aware TokenTextSplitter when available
+        try:
+            return TokenTextSplitter.from_huggingface_tokenizer(
+                tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            )
+        except Exception:
+            # If the specialized constructor isn't available, fall back
+            return TokenTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    except Exception:
+        # If HF tokenizer isn't available locally, fallback to a character splitter
+        return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 
 def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_directory: str = None) -> Chroma:
@@ -52,7 +87,22 @@ def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_dir
       to enable provenance reporting in generation_node.
     - Return the instantiated Chroma vectorstore object.
     """
-    pass
+    # Use Chroma.from_documents for straightforward indexing.
+    # We avoid persistent side effects unless `persist_directory` is provided.
+    try:
+        if persist_directory:
+            vectordb = Chroma.from_documents(documents=docs, embedding=embeddings, persist_directory=persist_directory)
+            # If Chroma supports a persist() call, call it. Guarded to avoid import-time errors.
+            try:
+                vectordb.persist()
+            except Exception:
+                # Some wrappers persist automatically; ignore persistent-call failures.
+                pass
+        else:
+            vectordb = Chroma.from_documents(documents=docs, embedding=embeddings)
+        return vectordb
+    except Exception as e:
+        raise RuntimeError(f"Failed to create Chroma vectorstore: {e}") from e
 
 
 def get_retriever(vectorstore: Chroma, k: int = 4) -> Any:
@@ -65,4 +115,29 @@ def get_retriever(vectorstore: Chroma, k: int = 4) -> Any:
     - Return a Retriever or a function that accepts a query and returns top-k
       LangChain Document objects used by the retrieval_node.
     """
-    pass
+    # Prefer vectorstore.as_retriever(search_kwargs={}) which is the common pattern
+    # in LangChain adapters. Fall back to other available methods and finally a
+    # tiny wrapper around similarity_search if necessary.
+    try:
+        retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+        return retriever
+    except Exception:
+        try:
+            retriever = vectorstore.get_retriever(search_kwargs={"k": k})
+            return retriever
+        except Exception:
+            # Last-resort simple retriever wrapper
+            class SimpleRetriever:
+                def __init__(self, vs, k):
+                    self.vs = vs
+                    self.k = k
+
+                def get_relevant_documents(self, query: str):
+                    # Many vectorstores expose similarity_search(query, k=k)
+                    try:
+                        return self.vs.similarity_search(query, k=self.k)
+                    except TypeError:
+                        # Some implementations accept (query, k) without keyword
+                        return self.vs.similarity_search(query, self.k)
+
+            return SimpleRetriever(vectorstore, k)
