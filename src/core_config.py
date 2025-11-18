@@ -1,29 +1,15 @@
 from typing import TypedDict, List, Any
+import os
 from langchain_core.messages import BaseMessage
 from langchain_core.documents import Document
 
-# Hugging Face / Transformers imports used for local pipeline construction.
-# These imports are present to make explicit which libraries the implementation
-# should rely on. Actual instantiation and configuration happen in functions
-# defined below (comment-only here).
 from langchain_huggingface.llms import HuggingFacePipeline
-from langchain_huggingface.embeddings import HuggingFaceBgeEmbeddings
-# For TensorFlow-based local inference use the TFAuto* model classes where available.
+from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import TFAutoModelForCausalLM, AutoTokenizer, pipeline
 
 
 class ResearchRAGState(TypedDict):
-    """
-    TypedDict describing the shared mutable state passed between LangGraph nodes.
-
-    Keys and intended types:
-    - user_query (str): The raw user input driving routing and generation.
-    - query_intent (str): Classification of the user intent, e.g. 'SUMMARY' or 'QNA'.
-    - retrieved_docs (List[Document]): LangChain Document objects returned by the retriever.
-    - raw_summary_parts (List[str]): Intermediate partial summaries for Map-Reduce summarization.
-    - final_answer (str): The final generated text returned to the user.
-    - chat_history (List[BaseMessage]): Optional conversation state for multi-turn flows.
-    """
+    """Shared mutable state passed between LangGraph nodes."""
     user_query: str
     query_intent: str
     retrieved_docs: List[Any]
@@ -33,36 +19,51 @@ class ResearchRAGState(TypedDict):
 
 
 def load_hf_pipeline(model_id: str, task: str = "text-generation", **kwargs) -> HuggingFacePipeline:
-    """
-    Signature and descriptive notes for loading a Hugging Face pipeline wrapped in
-    LangChain's `HuggingFacePipeline`.
+    """Return a LangChain HuggingFacePipeline for `task` using `model_id`.
 
-    Implementation notes (comment-only):
-    - Use `AutoTokenizer` and TensorFlow model classes (e.g., `TFAutoModelForCausalLM`) to load
-      a model into TensorFlow if a TF checkpoint is available.
-    - Configure `transformers.pipeline` for TensorFlow execution or use the HF
-      model directly through tf.keras if appropriate.
-    - Recommended kwargs: max_new_tokens, temperature, top_p, repetition_penalty,
-      and other model-specific generation arguments.
-    - For GPU acceleration with TensorFlow, configure the appropriate CUDA/cuDNN
-      drivers and consider `tf.keras.mixed_precision` to improve throughput.
-    - Note: Many community models provide PyTorch weights first; ensure the
-      selected model has TensorFlow-compatible weights or can be converted.
-
-    Returns:
-        A LangChain `HuggingFacePipeline` instance ready for use by runnable chains.
+    Prefers TensorFlow backend when available; falls back to PyTorch. Extra
+    generation kwargs (max_new_tokens, temperature, etc.) may be provided.
     """
-    pass
+    model = model_id or os.getenv("LLM_MODEL_ID")
+    if not model:
+        raise ValueError("No LLM model specified. Set LLM_MODEL_ID or pass model_id.")
+
+    try:
+        from transformers import pipeline as hf_pipeline, AutoTokenizer
+    except Exception as e:
+        raise ImportError("transformers is required to build a Hugging Face pipeline.") from e
+
+    # Prefer TF if TFAutoModelForCausalLM is available
+    use_tf = True
+    try:
+        from transformers import TFAutoModelForCausalLM  # type: ignore
+    except Exception:
+        use_tf = False
+
+    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True)
+    framework = "tf" if use_tf else "pt"
+    hf_pipe = hf_pipeline(task, model=model, tokenizer=tokenizer, framework=framework, **kwargs)
+
+    try:
+        from langchain_huggingface.llms import HuggingFacePipeline as LC_HFPipeline
+    except Exception as e:
+        raise ImportError("langchain_huggingface is required to return a LangChain HuggingFacePipeline.") from e
+
+    return LC_HFPipeline(pipeline=hf_pipe)
 
 
 def load_hf_embeddings(model_id: str):
-    """
-    Signature and descriptive notes for loading an embeddings model from Hugging Face.
+    """Return a LangChain HuggingFaceEmbeddings instance for `model_id`.
 
-    Implementation notes (comment-only):
-    - Prefer BGE-family, E5, or other open-source embedding models hosted on HF.
-    - If using a sentence-transformers compatible model, ensure the repo supports
-      efficient CPU/GPU inference and batched encoding.
-    - Return a LangChain-compatible Embeddings object (e.g., `HuggingFaceBgeEmbeddings`).
+    Falls back to the EMBEDDING_MODEL_ID env var when `model_id` is not provided.
     """
-    pass
+    model = model_id or os.getenv("EMBEDDING_MODEL_ID")
+    if not model:
+        raise ValueError("No embedding model specified. Set EMBEDDING_MODEL_ID or pass model_id.")
+
+    try:
+        from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+    except Exception as e:
+        raise ImportError("langchain_huggingface is required for Hugging Face embeddings.") from e
+
+    return HuggingFaceEmbeddings(model_name=model)
