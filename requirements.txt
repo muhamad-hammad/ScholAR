@@ -1,0 +1,14 @@
+langchain-core
+langchain-community
+langgraph
+pydantic
+huggingface-hub
+transformers
+tensorflow
+langchain-huggingface
+chromadb
+python-dotenv
+unstructured
+pypdf
+pytest
+flake8
