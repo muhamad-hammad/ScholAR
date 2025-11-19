@@ -1,3 +1,32 @@
+# ResearchPaperReaderRAG
+
+Lightweight Research Paper RAG system with Streamlit UI and test-friendly design.
+
+Quickstart
+1. Install minimal dependencies for development:
+
+```powershell
+python -m pip install -r requirements-ci.txt
+```
+
+2. To run the Streamlit UI (optional install `streamlit`):
+
+```powershell
+python -m pip install streamlit
+streamlit run web/streamlit_app.py
+```
+
+3. Run tests:
+
+```powershell
+python -m pytest -q
+```
+
+CLI usage
+
+```powershell
+python scripts/run_single_query.py --pdf example.pdf --query "Summarize the paper"
+```
 # ResearchPaperReaderRAG — Agentic RAG for Scientific Documents
 
 Lightweight project skeleton for an open-source, agentic Retrieval-Augmented Generation (RAG)
