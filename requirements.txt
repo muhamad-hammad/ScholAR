@@ -1,3 +1,6 @@
+# Optional user-facing requirements (for running the Streamlit app)
+streamlit
+python-dotenv
 langchain-core
 langchain-community
 langgraph

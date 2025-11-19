@@ -1,5 +1,8 @@
 # ResearchPaperReaderRAG
 
+[![CI](https://github.com/muhamad-hammad/ResearchPaperReaderRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/muhamad-hammad/ResearchPaperReaderRAG/actions/workflows/ci.yml)
+
+
 Lightweight Research Paper RAG system with Streamlit UI and test-friendly design.
 
 Quickstart
