@@ -16,7 +16,38 @@ def router_node(state: ResearchRAGState) -> ResearchRAGState:
       the query was labeled SUMMARY).
     - Keep the classifier lightweight to avoid unnecessary compute when many queries are quick metadata checks.
     """
-    pass
+    # Simple rule-based router to keep this lightweight and testable.
+    query = state.get("user_query", "")
+    if not isinstance(query, str):
+        query = str(query)
+
+    q = query.strip().lower()
+    summary_keywords = [
+        "summarize",
+        "summary",
+        "abstract",
+        "overview",
+        "explain",
+        "describe",
+        "key findings",
+        "conclusions",
+    ]
+
+    intent = "QNA"
+    reason = "default"
+    for kw in summary_keywords:
+        if kw in q:
+            intent = "SUMMARY"
+            reason = f"matched_keyword:{kw}"
+            break
+
+    # Update state with the chosen intent and optional trace metadata
+    state["query_intent"] = intent
+    meta = state.get("meta", {})
+    meta.setdefault("router", {})
+    meta["router"]["reason"] = reason
+    state["meta"] = meta
+    return state
 
 
 def retrieval_node(state: ResearchRAGState) -> ResearchRAGState:
@@ -30,7 +61,47 @@ def retrieval_node(state: ResearchRAGState) -> ResearchRAGState:
     - Attach retrieval metadata such as scores, provenance (source file, page),
       and any highlights used for debugging.
     """
-    pass
+    query = state.get("user_query")
+    if not query:
+        raise ValueError("retrieval_node requires state['user_query'] to be set")
+
+    # Expect a Retriever object to be provided in state under 'retriever'
+    retriever = state.get("retriever")
+    if retriever is None:
+        raise ValueError("retrieval_node requires a 'retriever' in state")
+
+    # Try common Retriever APIs in order of preference
+    docs = None
+    try:
+        # LangChain Retriever standard
+        docs = retriever.get_relevant_documents(query)
+    except Exception:
+        try:
+            docs = retriever.retrieve(query)
+        except Exception:
+            try:
+                docs = retriever.similarity_search(query, k=getattr(state, "k", 4))
+            except Exception as e:
+                raise RuntimeError("Retriever could not execute a search method") from e
+
+    # Ensure we have a list
+    if docs is None:
+        docs = []
+
+    # Attach provenance metadata for each document where possible
+    retrieval_meta = []
+    for d in docs:
+        md = getattr(d, "metadata", {}) or {}
+        entry = {
+            "source": md.get("source"),
+            # Some vectorstores embed scores in metadata under 'score' or similar.
+            "score": md.get("score") if isinstance(md.get("score"), (int, float)) else None,
+        }
+        retrieval_meta.append(entry)
+
+    state["retrieved_docs"] = docs
+    state["retrieval_metadata"] = retrieval_meta
+    return state
 
 
 def summarization_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
@@ -49,7 +120,70 @@ def summarization_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
     - Save the final text into `state['final_answer']`.
     - Record any intermediate artifacts for LangSmith traces (e.g., partial summaries).
     """
-    pass
+    # Map-Reduce summarization implementation.
+    # Map step: create short summaries for each document/chunk.
+    docs = state.get("retrieved_docs") or state.get("documents") or []
+    if not docs:
+        raise ValueError("summarization_node requires 'retrieved_docs' or 'documents' in state")
+
+    # Helper to call the provided llm in a permissive way.
+    def _call_llm(prompt: str) -> str:
+        try:
+            # If llm is a LangChain-style LLM with __call__ returning text
+            if callable(llm):
+                res = llm(prompt)
+            elif hasattr(llm, "generate"):
+                res = llm.generate(prompt)
+            else:
+                # Last resort: try pipeline attribute
+                res = llm.pipeline(prompt)
+        except Exception as e:
+            raise RuntimeError(f"LLM call failed: {e}") from e
+
+        # Normalize common return types
+        if isinstance(res, str):
+            return res
+        if isinstance(res, dict):
+            # HuggingFace pipeline sometimes returns {'generated_text': ...} or list
+            return res.get("generated_text") or str(res)
+        if isinstance(res, list):
+            # list of GenerationOutput or strings
+            first = res[0]
+            if isinstance(first, dict):
+                return first.get("generated_text") or str(first)
+            return str(first)
+        return str(res)
+
+    intermediate = []
+    for d in docs:
+        text = getattr(d, "page_content", None) or getattr(d, "content", None) or str(d)
+        prompt = (
+            "Summarize the following document chunk in 2-3 sentences focusing on main claims, "
+            "methods, and results. Be concise and factual.\n\n" + text + "\n\nSummary:"
+        )
+        summary = _call_llm(prompt).strip()
+        intermediate.append(summary)
+
+    # Save intermediate summaries
+    state["raw_summary_parts"] = intermediate
+
+    # Reduce step: synthesize intermediate summaries into a cohesive abstract
+    reduce_prompt = (
+        "You are given multiple short summaries of parts of a scientific paper. "
+        "Synthesize them into a single concise abstract (150-300 words) that preserves key claims, methods, and results. "
+        "Write in a neutral academic tone.\n\n"
+        + "\n\n".join(intermediate)
+        + "\n\nAbstract:"
+    )
+    final = _call_llm(reduce_prompt).strip()
+    state["final_answer"] = final
+
+    # Trace metadata
+    meta = state.get("meta", {})
+    meta.setdefault("summarization", {})
+    meta["summarization"]["parts"] = len(intermediate)
+    state["meta"] = meta
+    return state
 
 
 def generation_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
@@ -64,7 +198,65 @@ def generation_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
     - Store the final generated answer in `state['final_answer']`.
     - Optionally update `chat_history` with the exchange for multi-turn support.
     """
-    pass
+    # Grounded generation using retrieved document chunks.
+    query = state.get("user_query")
+    if not query:
+        raise ValueError("generation_node requires state['user_query']")
+
+    docs = state.get("retrieved_docs") or []
+
+    # Build context by concatenating top-k documents with provenance markers
+    context_parts = []
+    for idx, d in enumerate(docs[:8]):
+        md = getattr(d, "metadata", {}) or {}
+        src = md.get("source") or md.get("file") or f"doc_{idx}"
+        content = getattr(d, "page_content", None) or getattr(d, "content", None) or str(d)
+        context_parts.append(f"[Source: {src}]\n{content}")
+
+    context = "\n\n---\n\n".join(context_parts)
+
+    prompt = (
+        "You are an expert assistant. Answer the user's question ONLY using the information in the provided context. "
+        "If the answer cannot be found in the context, say 'I don't know' or state that the information is not available. "
+        "Provide brief provenance for your answers (which source/section).\n\nContext:\n"
+        + context
+        + "\n\nUser question:\n"
+        + query
+        + "\n\nAnswer (be concise, include provenance):"
+    )
+
+    # Reuse the same permissive LLM caller as summarization_node
+    def _call_llm(prompt: str) -> str:
+        try:
+            if callable(llm):
+                res = llm(prompt)
+            elif hasattr(llm, "generate"):
+                res = llm.generate(prompt)
+            else:
+                res = llm.pipeline(prompt)
+        except Exception as e:
+            raise RuntimeError(f"LLM call failed: {e}") from e
+
+        if isinstance(res, str):
+            return res
+        if isinstance(res, dict):
+            return res.get("generated_text") or str(res)
+        if isinstance(res, list):
+            first = res[0]
+            if isinstance(first, dict):
+                return first.get("generated_text") or str(first)
+            return str(first)
+        return str(res)
+
+    answer = _call_llm(prompt).strip()
+    state["final_answer"] = answer
+
+    # Attach provenance info if available
+    meta = state.get("meta", {})
+    meta.setdefault("generation", {})
+    meta["generation"]["sources_used"] = [getattr(d, "metadata", {}).get("source") for d in docs[:8]]
+    state["meta"] = meta
+    return state
 
 
 def determine_next_node(state: ResearchRAGState) -> str:
@@ -76,4 +268,26 @@ def determine_next_node(state: ResearchRAGState) -> str:
       either 'retrieval_node' or 'summarization_node'.
     - This function must be deterministic and well-instrumented for tracing.
     """
-    pass
+    # Read intent from state, normalize to uppercase for robustness
+    intent = None
+    if isinstance(state, dict):
+        intent = state.get("query_intent")
+    # If not explicitly set, attempt a lightweight fallback from user_query
+    if not intent:
+        uq = (state.get("user_query") or "")
+        if isinstance(uq, str) and "?" in uq:
+            intent = "QNA"
+        else:
+            # Default to SUMMARY for short 'summarize' style queries, else QNA
+            if isinstance(uq, str) and any(k in uq.lower() for k in ["summarize", "summary", "abstract"]):
+                intent = "SUMMARY"
+            else:
+                intent = "QNA"
+
+    intent = (intent or "QNA").upper()
+
+    # Map the intent to the node name expected by the StateGraph
+    if intent == "SUMMARY":
+        return "summarization_node"
+    # Default and 'QNA' go to retrieval
+    return "retrieval_node"

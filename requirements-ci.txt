@@ -1,0 +1,4 @@
+# Minimal CI/test dependencies (keeps CI fast and small)
+pytest>=7.0
+pytest-cov
+pytest-mock

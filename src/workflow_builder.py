@@ -1,3 +1,4 @@
+from typing import Any
 from langgraph.graph import StateGraph, END
 from src.core_config import ResearchRAGState
 from src.graph_nodes import router_node, retrieval_node, summarization_node, generation_node, determine_next_node
@@ -29,17 +30,34 @@ def build_research_rag_graph(llm: Any, retriever: Any) -> Any:
       easier trace analysis in LangSmith.
     """
 
-    # Pseudocode steps (comment-only) for implementers:
-    # graph = StateGraph(ResearchRAGState)
-    # graph.add_node("router_node", router_node)
-    # graph.add_node("retrieval_node", lambda state: retrieval_node(state))
-    # graph.add_node("summarization_node", lambda state: summarization_node(state, llm))
-    # graph.add_node("generation_node", lambda state: generation_node(state, llm))
-    # graph.set_entry_point("router_node")
-    # graph.add_conditional_edges("router_node", determine_next_node, {"QNA":"retrieval_node", "SUMMARY":"summarization_node"})
-    # graph.add_edge("retrieval_node", "generation_node")
-    # graph.add_edge("generation_node", END)
-    # graph.add_edge("summarization_node", END)
-    # return graph.compile()
+    # Try to build a proper LangGraph StateGraph if the library is available.
+    try:
+        graph = StateGraph(ResearchRAGState)
 
-    pass
+        # Wrap nodes so the call signature matches what StateGraph expects
+        graph.add_node("router_node", router_node)
+
+        # retrieval_node expects only state
+        graph.add_node("retrieval_node", retrieval_node)
+
+        # summarization and generation expect (state, llm) -> state, so wrap them
+        graph.add_node("summarization_node", lambda state: summarization_node(state, llm))
+        graph.add_node("generation_node", lambda state: generation_node(state, llm))
+
+        graph.set_entry_point("router_node")
+
+        # Add conditional edges from router using our determine_next_node function
+        # determine_next_node will return the node name (e.g. 'retrieval_node' or 'summarization_node')
+        graph.add_conditional_edges("router_node", determine_next_node, {"QNA": "retrieval_node", "SUMMARY": "summarization_node"})
+
+        # QNA path
+        graph.add_edge("retrieval_node", "generation_node")
+        graph.add_edge("generation_node", END)
+
+        # Summary path
+        graph.add_edge("summarization_node", END)
+
+        return graph.compile()
+    except Exception as e:
+        # If LangGraph isn't available or compile fails, surface a clear error
+        raise RuntimeError("Failed to build StateGraph. Ensure 'langgraph' is installed and compatible. Original error: {}".format(e)) from e
