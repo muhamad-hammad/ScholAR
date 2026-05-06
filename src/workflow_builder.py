@@ -48,7 +48,11 @@ def build_research_rag_graph(llm: Any, retriever: Any) -> Any:
 
         # Add conditional edges from router using our determine_next_node function
         # determine_next_node will return the node name (e.g. 'retrieval_node' or 'summarization_node')
-        graph.add_conditional_edges("router_node", determine_next_node, {"QNA": "retrieval_node", "SUMMARY": "summarization_node"})
+        graph.add_conditional_edges(
+            "router_node",
+            determine_next_node,
+            {"retrieval_node": "retrieval_node", "summarization_node": "summarization_node"},
+        )
 
         # QNA path
         graph.add_edge("retrieval_node", "generation_node")
