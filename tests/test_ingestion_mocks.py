@@ -6,11 +6,10 @@ from types import SimpleNamespace
 # without installing heavy dependencies like LangChain or transformers.
 if "langchain_community" not in sys.modules:
     lc = SimpleNamespace()
-    # submodules expected by src.ingestion
     doc_mod = SimpleNamespace()
-    # placeholders for loader classes; tests will monkeypatch these names
     doc_mod.DedocFileLoader = lambda *a, **k: (_ for _ in ()).throw(ImportError("placeholder"))
-    doc_mod.UnstructuredPDFLoader = lambda *a, **k: (_ for _ in ()).throw(ImportError("placeholder"))
+    doc_mod.PyMuPDFLoader = lambda *a, **k: (_ for _ in ()).throw(ImportError("placeholder"))
+    doc_mod.PyPDFLoader = lambda *a, **k: (_ for _ in ()).throw(ImportError("placeholder"))
     vs_mod = SimpleNamespace()
     vs_mod.Chroma = lambda *a, **k: (_ for _ in ()).throw(ImportError("placeholder"))
     sys.modules["langchain_community"] = lc
@@ -54,40 +53,39 @@ class FakeDoc:
 
 
 def test_load_documents_prefers_dedoc_and_falls_back(monkeypatch):
+    doc_mod = sys.modules["langchain_community.document_loaders"]
+
     # Case A: Dedoc works
     class DedocLoaderOK:
         def __init__(self, path, with_tables=False):
             self.path = path
 
         def load(self):
-            return [FakeDoc("dedoc content")] 
+            return [FakeDoc("dedoc content")]
 
     monkeypatch.setattr(ingestion, "DedocFileLoader", DedocLoaderOK)
-    monkeypatch.setattr(ingestion, "UnstructuredPDFLoader", lambda p: (_ for _ in ()).throw(RuntimeError("should not be used")))
 
     docs = ingestion.load_documents("some.pdf", prefer_dedoc=True)
     assert isinstance(docs, list)
     assert docs[0].page_content == "dedoc content"
-    assert docs[0].metadata.get("source") == "paper.pdf" or docs[0].metadata.get("source") == "some.pdf"
+    assert docs[0].metadata.get("source") in ("paper.pdf", "some.pdf")
 
-    # Case B: Dedoc fails -> fallback to Unstructured
+    # Case B: Dedoc fails -> fallback to PyMuPDFLoader
     def dedoc_raises(path, with_tables=False):
         raise RuntimeError("dedoc not available")
 
-    class UnstructuredOK:
+    class PyMuPDFLoaderOK:
         def __init__(self, path):
             self.path = path
 
         def load(self):
-            return [FakeDoc("unstructured content")]
+            return [FakeDoc("pymupdf content")]
 
     monkeypatch.setattr(ingestion, "DedocFileLoader", dedoc_raises)
-    monkeypatch.setattr(ingestion, "UnstructuredPDFLoader", UnstructuredOK)
+    monkeypatch.setattr(doc_mod, "PyMuPDFLoader", PyMuPDFLoaderOK)
 
     docs2 = ingestion.load_documents("other.pdf", prefer_dedoc=True)
-    assert docs2[0].page_content == "unstructured content"
-    # The loader may set its own metadata source; accept either the original
-    # value on the FakeDoc or the passed pdf path.
+    assert docs2[0].page_content == "pymupdf content"
     assert docs2[0].metadata.get("source") in ("paper.pdf", "other.pdf")
 
 

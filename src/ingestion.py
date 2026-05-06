@@ -1,47 +1,53 @@
 # Ingestion module: document loaders, token-aware splitters, and vectorstore wiring.
 
 from typing import List, Any
-from langchain_community.document_loaders import DedocFileLoader, UnstructuredPDFLoader
+from langchain_community.document_loaders import DedocFileLoader
 from langchain_text_splitters import TokenTextSplitter, RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 
-def load_documents(pdf_path: str, prefer_dedoc: bool = True) -> List[Document]:
-    """
-    Load and parse PDF research documents with structure preservation.
-
-    This implementation prefers Dedoc (table-preserving). If Dedoc fails,
-    it falls back to Unstructured.
-    """
-    # Try Dedoc first for better table and layout preservation
-    if prefer_dedoc:
-        try:
-            loader = DedocFileLoader(pdf_path, with_tables=True)
-            docs = loader.load()
-            # Ensure metadata has a source field for provenance
-            for d in docs:
-                if not getattr(d, "metadata", None):
-                    d.metadata = {"source": pdf_path}
-                else:
-                    d.metadata.setdefault("source", pdf_path)
-            return docs
-        except FileNotFoundError:
-            raise
-        except Exception:
-            # Dedoc not available or failed; fall back to Unstructured
-            pass
-
-    # Fallback to UnstructuredPDFLoader
-    loader = UnstructuredPDFLoader(pdf_path)
-    docs = loader.load()
+def _set_source(docs: List[Document], pdf_path: str) -> List[Document]:
     for d in docs:
         if not getattr(d, "metadata", None):
             d.metadata = {"source": pdf_path}
         else:
             d.metadata.setdefault("source", pdf_path)
     return docs
+
+
+def load_documents(pdf_path: str, prefer_dedoc: bool = True) -> List[Document]:
+    """
+    Load and parse PDF research documents with structure preservation.
+
+    Loader priority:
+    1. DedocFileLoader — best table and layout preservation
+    2. PyMuPDFLoader   — fast, accurate, no heavy system deps
+    3. PyPDFLoader     — pure-Python last resort
+    """
+    if prefer_dedoc:
+        try:
+            loader = DedocFileLoader(pdf_path, with_tables=True)
+            docs = loader.load()
+            return _set_source(docs, pdf_path)
+        except FileNotFoundError:
+            raise
+        except Exception:
+            pass
+
+    # PyMuPDF (fitz) — installed, no pdfminer dependency
+    try:
+        from langchain_community.document_loaders import PyMuPDFLoader
+        docs = PyMuPDFLoader(pdf_path).load()
+        return _set_source(docs, pdf_path)
+    except Exception:
+        pass
+
+    # Pure-Python pypdf fallback
+    from langchain_community.document_loaders import PyPDFLoader
+    docs = PyPDFLoader(pdf_path).load()
+    return _set_source(docs, pdf_path)
 
 
 def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap: int = 128) -> TokenTextSplitter:

@@ -117,12 +117,31 @@ if "langchain_community" not in sys.modules:
         def load(self):
             return []
 
+    class _PyMuPDFLoader:
+        def __init__(self, path):
+            self.path = path
+
+        def load(self):
+            return []
+
+    class _PyPDFLoader:
+        def __init__(self, path):
+            self.path = path
+
+        def load(self):
+            return []
+
     class _Chroma:
         @staticmethod
         def from_documents(documents=None, embedding=None, persist_directory=None):
             return SimpleNamespace(persist=lambda: None, similarity_search=lambda q, k=4: [])
 
-    doc_mod = SimpleNamespace(DedocFileLoader=_DedocFileLoader, UnstructuredPDFLoader=_UnstructuredPDFLoader)
+    doc_mod = SimpleNamespace(
+        DedocFileLoader=_DedocFileLoader,
+        UnstructuredPDFLoader=_UnstructuredPDFLoader,
+        PyMuPDFLoader=_PyMuPDFLoader,
+        PyPDFLoader=_PyPDFLoader,
+    )
     vs_mod = SimpleNamespace(Chroma=_Chroma)
     sys.modules["langchain_community"] = lc_comm
     sys.modules["langchain_community.document_loaders"] = doc_mod
