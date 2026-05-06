@@ -9,9 +9,12 @@ huggingface-hub
 transformers
 tensorflow
 langchain-huggingface
+langchain-openai
+langchain-google-genai
+langchain-groq
 chromadb
-python-dotenv
 unstructured
 pypdf
+pymupdf
 pytest
 flake8
