@@ -1,7 +1,42 @@
+import concurrent.futures
+import os
 from typing import Any
 from src.core_config import ResearchRAGState
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
+
+
+def _call_llm(llm: Any, prompt: str) -> str:
+    timeout = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+
+    def _invoke():
+        try:
+            if callable(llm):
+                res = llm(prompt)
+            elif hasattr(llm, "generate"):
+                res = llm.generate(prompt)
+            else:
+                res = llm.pipeline(prompt)
+        except Exception as e:
+            raise RuntimeError(f"LLM call failed: {e}") from e
+
+        if isinstance(res, str):
+            return res
+        if isinstance(res, dict):
+            return res.get("generated_text") or str(res)
+        if isinstance(res, list):
+            first = res[0]
+            if isinstance(first, dict):
+                return first.get("generated_text") or str(first)
+            return str(first)
+        return str(res)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_invoke)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError(f"LLM call timed out after {timeout} seconds")
 
 
 def router_node(state: ResearchRAGState) -> ResearchRAGState:
@@ -73,16 +108,18 @@ def retrieval_node(state: ResearchRAGState) -> ResearchRAGState:
     # Try common Retriever APIs in order of preference
     docs = None
     try:
-        # LangChain Retriever standard
-        docs = retriever.get_relevant_documents(query)
+        docs = retriever.invoke(query)
     except Exception:
         try:
-            docs = retriever.retrieve(query)
+            docs = retriever.get_relevant_documents(query)
         except Exception:
             try:
-                docs = retriever.similarity_search(query, k=getattr(state, "k", 4))
-            except Exception as e:
-                raise RuntimeError("Retriever could not execute a search method") from e
+                docs = retriever.retrieve(query)
+            except Exception:
+                try:
+                    docs = retriever.similarity_search(query, k=state.get("k", 4))
+                except Exception as e:
+                    raise RuntimeError("Retriever could not execute a search method") from e
 
     # Ensure we have a list
     if docs is None:
@@ -126,34 +163,6 @@ def summarization_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
     if not docs:
         raise ValueError("summarization_node requires 'retrieved_docs' or 'documents' in state")
 
-    # Helper to call the provided llm in a permissive way.
-    def _call_llm(prompt: str) -> str:
-        try:
-            # If llm is a LangChain-style LLM with __call__ returning text
-            if callable(llm):
-                res = llm(prompt)
-            elif hasattr(llm, "generate"):
-                res = llm.generate(prompt)
-            else:
-                # Last resort: try pipeline attribute
-                res = llm.pipeline(prompt)
-        except Exception as e:
-            raise RuntimeError(f"LLM call failed: {e}") from e
-
-        # Normalize common return types
-        if isinstance(res, str):
-            return res
-        if isinstance(res, dict):
-            # HuggingFace pipeline sometimes returns {'generated_text': ...} or list
-            return res.get("generated_text") or str(res)
-        if isinstance(res, list):
-            # list of GenerationOutput or strings
-            first = res[0]
-            if isinstance(first, dict):
-                return first.get("generated_text") or str(first)
-            return str(first)
-        return str(res)
-
     intermediate = []
     for d in docs:
         text = getattr(d, "page_content", None) or getattr(d, "content", None) or str(d)
@@ -161,7 +170,7 @@ def summarization_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
             "Summarize the following document chunk in 2-3 sentences focusing on main claims, "
             "methods, and results. Be concise and factual.\n\n" + text + "\n\nSummary:"
         )
-        summary = _call_llm(prompt).strip()
+        summary = _call_llm(llm, prompt).strip()
         intermediate.append(summary)
 
     # Save intermediate summaries
@@ -175,7 +184,7 @@ def summarization_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
         + "\n\n".join(intermediate)
         + "\n\nAbstract:"
     )
-    final = _call_llm(reduce_prompt).strip()
+    final = _call_llm(llm, reduce_prompt).strip()
     state["final_answer"] = final
 
     # Trace metadata
@@ -194,9 +203,10 @@ def generation_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
     - Construct a grounded prompt that concatenates the top retrieved chunks and
       the `state['user_query']` while explicitly instructing the LLM to only answer
       from the provided context (to minimize hallucinations).
+    - Prepend up to the last 6 Q&A turns from conversation_history so the LLM has
+      context for follow-up questions.
     - Include provenance reporting in the output (e.g., "Answer based on section X, page Y").
     - Store the final generated answer in `state['final_answer']`.
-    - Optionally update `chat_history` with the exchange for multi-turn support.
     """
     # Grounded generation using retrieved document chunks.
     query = state.get("user_query")
@@ -204,6 +214,7 @@ def generation_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
         raise ValueError("generation_node requires state['user_query']")
 
     docs = state.get("retrieved_docs") or []
+    history = state.get("conversation_history") or []
 
     # Build context by concatenating top-k documents with provenance markers
     context_parts = []
@@ -215,40 +226,34 @@ def generation_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
 
     context = "\n\n---\n\n".join(context_parts)
 
+    # Format the last 6 Q&A pairs (12 entries) from conversation history
+    history_section = ""
+    if history:
+        recent = history[-12:]
+        formatted = []
+        for turn in recent:
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if role == "user":
+                formatted.append(f"User: {content}")
+            elif role == "assistant":
+                formatted.append(f"Assistant: {content}")
+        if formatted:
+            history_section = "Previous conversation:\n" + "\n\n".join(formatted) + "\n\n"
+
     prompt = (
         "You are an expert assistant. Answer the user's question ONLY using the information in the provided context. "
         "If the answer cannot be found in the context, say 'I don't know' or state that the information is not available. "
-        "Provide brief provenance for your answers (which source/section).\n\nContext:\n"
+        "Provide brief provenance for your answers (which source/section).\n\n"
+        + history_section
+        + "Context:\n"
         + context
         + "\n\nUser question:\n"
         + query
         + "\n\nAnswer (be concise, include provenance):"
     )
 
-    # Reuse the same permissive LLM caller as summarization_node
-    def _call_llm(prompt: str) -> str:
-        try:
-            if callable(llm):
-                res = llm(prompt)
-            elif hasattr(llm, "generate"):
-                res = llm.generate(prompt)
-            else:
-                res = llm.pipeline(prompt)
-        except Exception as e:
-            raise RuntimeError(f"LLM call failed: {e}") from e
-
-        if isinstance(res, str):
-            return res
-        if isinstance(res, dict):
-            return res.get("generated_text") or str(res)
-        if isinstance(res, list):
-            first = res[0]
-            if isinstance(first, dict):
-                return first.get("generated_text") or str(first)
-            return str(first)
-        return str(res)
-
-    answer = _call_llm(prompt).strip()
+    answer = _call_llm(llm, prompt).strip()
     state["final_answer"] = answer
 
     # Attach provenance info if available

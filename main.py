@@ -1,9 +1,18 @@
 import os
 from dotenv import load_dotenv
 
+
+def _activate_langsmith() -> None:
+    """Activate LangSmith tracing if both LANGSMITH_API_KEY and LANGSMITH_TRACING are set."""
+    api_key = os.getenv("LANGSMITH_API_KEY", "")
+    tracing = os.getenv("LANGSMITH_TRACING", "")
+    if api_key and tracing:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = api_key
+
 # Imports for LangChain / LangGraph components and local modules
 from langchain_core.documents import Document
-from src.core_config import load_hf_pipeline, load_hf_embeddings, ResearchRAGState
+from src.core_config import load_hf_pipeline, load_hf_embeddings, load_llm, ResearchRAGState
 from src.ingestion import load_documents, get_text_splitter, create_vectorstore, get_retriever
 from src.workflow_builder import build_research_rag_graph
 from src.graph_nodes import (
@@ -97,28 +106,46 @@ def run_ingestion_pipeline() -> object:
     return retriever
 
 
-def run_rag_chat_loop(compiled_graph: object) -> None:
+def _append_history(state: dict, user_query: str, answer: str) -> None:
+    """Append the current Q&A turn to conversation_history in state (mutates state)."""
+    if answer is not None:
+        hist = state.setdefault("conversation_history", [])
+        hist.append({"role": "user", "content": user_query})
+        hist.append({"role": "assistant", "content": answer})
+
+
+def run_rag_chat_loop(compiled_graph: object, retriever: object = None, llm: object = None) -> None:
     """
     Interactive chat loop for running LangGraph compiled workflows.
 
     Responsibilities (comment-only):
     - Accept user input queries in a loop (CLI or lightweight web UI wrapper).
     - For each incoming query, seed the `ResearchRAGState` with the `user_query`
-      and any optionally persisted `chat_history`.
+      and any optionally persisted `conversation_history`.
     - Execute the compiled LangGraph workflow and block until a terminal state is
       returned. The graph execution should be fully traced (LangSmith) if
       environment tracing variables are enabled.
-    - Print or return the `state['final_answer']` to the caller and optionally
-      append the exchange to `chat_history` for multi-turn contexts.
+    - Print the conversation history (last 6 Q&A pairs) at the start of each iteration.
+    - Accumulate conversation history across turns for multi-turn context.
 
     Args:
-        compiled_graph: The compiled/ready-to-run LangGraph instance returned by
-                        `build_research_rag_graph`.
+        compiled_graph: The compiled/ready-to-run LangGraph instance.
+        retriever: Optional retriever for the procedural fallback path.
+        llm: Optional LLM callable for the procedural fallback path.
     """
-    # Implement a simple interactive REPL that uses `run_rag_once` for each query.
     print("Entering RAG chat loop. Type 'exit' or Ctrl-C to quit.")
+    conversation_history: list = []
     try:
         while True:
+            # Print recent history at the top of each turn
+            if conversation_history:
+                print("\n--- Recent conversation (last 6 turns) ---")
+                for turn in conversation_history[-12:]:
+                    role = turn.get("role", "").capitalize()
+                    content = turn.get("content", "")
+                    print(f"{role}: {content}")
+                print("---\n")
+
             user_query = input("User> ").strip()
             if not user_query:
                 continue
@@ -127,15 +154,26 @@ def run_rag_chat_loop(compiled_graph: object) -> None:
                 break
 
             try:
-                answer, state = run_rag_once(compiled_graph, user_query)
+                answer, state = run_rag_once(
+                    compiled_graph, user_query,
+                    retriever=retriever, llm=llm,
+                    conversation_history=conversation_history,
+                )
                 print("Assistant:", answer)
+                conversation_history = state.get("conversation_history", conversation_history)
             except Exception as e:
                 print("Error while processing query:", e)
     except KeyboardInterrupt:
         print("Interrupted; exiting chat loop.")
 
 
-def run_rag_once(compiled_graph: object, user_query: str, retriever: object = None, llm: object = None):
+def run_rag_once(
+    compiled_graph: object,
+    user_query: str,
+    retriever: object = None,
+    llm: object = None,
+    conversation_history: list = None,
+):
     """
     Run a single RAG execution and return (final_answer, state).
 
@@ -144,12 +182,16 @@ def run_rag_once(compiled_graph: object, user_query: str, retriever: object = No
       entrypoint, attempt to run it with an initial `ResearchRAGState`.
     - If `compiled_graph` is None or not executable, fall back to a simple
       procedural execution using the pure functions in `src.graph_nodes`.
+    - conversation_history is threaded through state so generation_node can use
+      prior turns; the completed turn is appended before returning.
 
     Returns:
         (final_answer: str, state: ResearchRAGState)
     """
-    # Build initial state
-    state = {"user_query": user_query, "meta": {}}
+    history = list(conversation_history or [])
+
+    # Build initial state, seeding conversation history for the generation node
+    state = {"user_query": user_query, "meta": {}, "conversation_history": history}
 
     # Attach retriever if provided
     if retriever is not None:
@@ -167,7 +209,9 @@ def run_rag_once(compiled_graph: object, user_query: str, retriever: object = No
                     else:
                         final_state = getattr(result, "state", None) or getattr(result, "result", None) or result
                     if isinstance(final_state, dict):
-                        return final_state.get("final_answer"), final_state
+                        answer = final_state.get("final_answer")
+                        _append_history(final_state, user_query, answer)
+                        return answer, final_state
                 except Exception:
                     break
 
@@ -198,7 +242,9 @@ def run_rag_once(compiled_graph: object, user_query: str, retriever: object = No
             llm = _simple_llm
         state = generation_node(state, llm)
 
-    return state.get("final_answer"), state
+    answer = state.get("final_answer")
+    _append_history(state, user_query, answer)
+    return answer, state
 
 
 def main() -> None:
@@ -225,25 +271,24 @@ def main() -> None:
     """
     # Load env
     load_dotenv()
+    _activate_langsmith()
 
     # Run ingestion to get a retriever
     retriever = run_ingestion_pipeline()
 
-    # Load the LLM pipeline (deferred to core_config for TF/PyTorch handling)
-    llm_model = os.getenv("LLM_MODEL_ID")
+    # Load the LLM — provider and model resolved from env (LLM_PROVIDER, LLM_MODEL_ID)
     llm = None
-    if llm_model:
-        try:
-            llm = load_hf_pipeline(llm_model)
-        except Exception:
-            llm = None
+    try:
+        llm = load_llm()
+    except Exception:
+        llm = None
 
     # Build the graph if possible
     compiled = build_research_rag_graph(llm=llm, retriever=retriever)
 
     # Run interactive loop (not for tests)
     try:
-        run_rag_chat_loop(compiled)
+        run_rag_chat_loop(compiled, retriever=retriever, llm=llm)
     except NotImplementedError:
         # Expected in test environments where interactive loop is not desired
         return
