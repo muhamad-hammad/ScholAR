@@ -1,5 +1,7 @@
 # Ingestion module: document loaders, token-aware splitters, and vectorstore wiring.
 
+import math
+import os
 from typing import List, Any
 from langchain_community.document_loaders import DedocFileLoader
 from langchain_text_splitters import TokenTextSplitter, RecursiveCharacterTextSplitter
@@ -93,19 +95,30 @@ def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_dir
       to enable provenance reporting in generation_node.
     - Return the instantiated Chroma vectorstore object.
     """
-    # Use Chroma.from_documents for straightforward indexing.
-    # We avoid persistent side effects unless `persist_directory` is provided.
+    batch_size = max(1, int(os.getenv("EMBED_BATCH_SIZE", "64")))
+    total = len(docs)
+    num_batches = max(1, math.ceil(total / batch_size))
+
     try:
+        first_batch = docs[:batch_size]
+        if total > batch_size:
+            print(f"Embedding batch 1/{num_batches}...")
+
         if persist_directory:
-            vectordb = Chroma.from_documents(documents=docs, embedding=embeddings, persist_directory=persist_directory)
-            # If Chroma supports a persist() call, call it. Guarded to avoid import-time errors.
+            vectordb = Chroma.from_documents(documents=first_batch, embedding=embeddings, persist_directory=persist_directory)
+        else:
+            vectordb = Chroma.from_documents(documents=first_batch, embedding=embeddings)
+
+        for i, start in enumerate(range(batch_size, total, batch_size), 2):
+            print(f"Embedding batch {i}/{num_batches}...")
+            vectordb.add_documents(docs[start:start + batch_size])
+
+        if persist_directory:
             try:
                 vectordb.persist()
             except Exception:
-                # Some wrappers persist automatically; ignore persistent-call failures.
                 pass
-        else:
-            vectordb = Chroma.from_documents(documents=docs, embedding=embeddings)
+
         return vectordb
     except Exception as e:
         raise RuntimeError(f"Failed to create Chroma vectorstore: {e}") from e
@@ -121,11 +134,19 @@ def get_retriever(vectorstore: Chroma, k: int = 4) -> Any:
     - Return a Retriever or a function that accepts a query and returns top-k
       LangChain Document objects used by the retrieval_node.
     """
+    threshold = float(os.getenv("RETRIEVER_SCORE_THRESHOLD", "0.0"))
+
     # Prefer vectorstore.as_retriever(search_kwargs={}) which is the common pattern
     # in LangChain adapters. Fall back to other available methods and finally a
     # tiny wrapper around similarity_search if necessary.
     try:
-        retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+        if threshold > 0:
+            retriever = vectorstore.as_retriever(
+                search_type="similarity_score_threshold",
+                search_kwargs={"k": k, "score_threshold": threshold},
+            )
+        else:
+            retriever = vectorstore.as_retriever(search_kwargs={"k": k})
         return retriever
     except Exception:
         try:
