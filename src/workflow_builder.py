@@ -2,7 +2,6 @@ from typing import Any
 from langgraph.graph import StateGraph, END
 from src.core_config import ResearchRAGState
 from src.graph_nodes import router_node, retrieval_node, summarization_node, generation_node, determine_next_node
-from langchain_core.runnables import Runnable
 
 
 def build_research_rag_graph(llm: Any, retriever: Any) -> Any:

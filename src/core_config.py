@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import TypedDict, List, Any, Dict, Optional
+from typing import TypedDict, List, Any, Dict
 import os
-from langchain_core.messages import BaseMessage
-from langchain_core.documents import Document
 
 
 class ResearchRAGState(TypedDict, total=False):
@@ -18,9 +16,10 @@ class ResearchRAGState(TypedDict, total=False):
     conversation_history: List[Dict[str, str]]
     retriever: Any
     meta: Dict[str, Any]
+    _skip_generation: bool
 
 
-def load_hf_pipeline(model_id: str, task: str = "text-generation", **kwargs) -> HuggingFacePipeline:
+def load_hf_pipeline(model_id: str, task: str = "text-generation", **kwargs) -> Any:
     """Return a LangChain HuggingFacePipeline for `task` using `model_id`.
 
     Prefers TensorFlow backend when available; falls back to PyTorch. Extra
@@ -38,7 +37,7 @@ def load_hf_pipeline(model_id: str, task: str = "text-generation", **kwargs) -> 
     # Prefer TF if TFAutoModelForCausalLM is available
     use_tf = True
     try:
-        from transformers import TFAutoModelForCausalLM  # type: ignore
+        pass  # type: ignore
     except Exception:
         use_tf = False
 
