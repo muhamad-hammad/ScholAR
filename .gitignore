@@ -79,6 +79,7 @@ secrets.toml
 
 # ── Planning / local notes ───────────────────────────────────────────────────
 implementation_plan_nextjs.md
+.claude/
 
 # ── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
