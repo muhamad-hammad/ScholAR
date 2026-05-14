@@ -2,9 +2,6 @@ import concurrent.futures
 import os
 from typing import Any
 from src.core_config import ResearchRAGState
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable
-
 
 def _call_llm(llm: Any, prompt: str) -> str:
     timeout = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
@@ -125,6 +122,13 @@ def retrieval_node(state: ResearchRAGState) -> ResearchRAGState:
     if docs is None:
         docs = []
 
+    if not docs:
+        state["retrieved_docs"] = []
+        state["retrieval_metadata"] = []
+        state["final_answer"] = "No relevant content found in the document for this query."
+        state["_skip_generation"] = True
+        return state
+
     # Attach provenance metadata for each document where possible
     retrieval_meta = []
     for d in docs:
@@ -176,12 +180,26 @@ def summarization_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
     # Save intermediate summaries
     state["raw_summary_parts"] = intermediate
 
+    # Token budget: keep last N summaries that fit within SUMMARY_MAX_CHARS
+    max_chars = int(os.getenv("SUMMARY_MAX_CHARS", "12000"))
+    if max_chars > 0 and sum(len(s) for s in intermediate) > max_chars:
+        kept, total = [], 0
+        for s in reversed(intermediate):
+            if total + len(s) <= max_chars:
+                kept.append(s)
+                total += len(s)
+            else:
+                break
+        intermediate_for_reduce = list(reversed(kept)) or intermediate[:1]
+    else:
+        intermediate_for_reduce = intermediate
+
     # Reduce step: synthesize intermediate summaries into a cohesive abstract
     reduce_prompt = (
         "You are given multiple short summaries of parts of a scientific paper. "
         "Synthesize them into a single concise abstract (150-300 words) that preserves key claims, methods, and results. "
         "Write in a neutral academic tone.\n\n"
-        + "\n\n".join(intermediate)
+        + "\n\n".join(intermediate_for_reduce)
         + "\n\nAbstract:"
     )
     final = _call_llm(llm, reduce_prompt).strip()
@@ -208,6 +226,9 @@ def generation_node(state: ResearchRAGState, llm: Any) -> ResearchRAGState:
     - Include provenance reporting in the output (e.g., "Answer based on section X, page Y").
     - Store the final generated answer in `state['final_answer']`.
     """
+    if state.get("_skip_generation"):
+        return state
+
     # Grounded generation using retrieved document chunks.
     query = state.get("user_query")
     if not query:
