@@ -34,7 +34,7 @@ from src.graph_nodes import (  # noqa: E402
 # explaining how the runtime should be wired. No implementation logic is included here.
 
 
-def run_ingestion_pipeline() -> object:
+def run_ingestion_pipeline(persist: bool = True) -> object:
     """
     Ingestion pipeline entry-point.
 
@@ -66,8 +66,8 @@ def run_ingestion_pipeline() -> object:
     tokenizer_name = os.getenv("TOKENIZER_NAME") or os.getenv("LLM_MODEL_ID") or os.getenv("EMBEDDING_MODEL_ID")
     embedding_model_id = os.getenv("EMBEDDING_MODEL_ID")
 
-    # Optional persistence directory for Chroma
-    persist_dir = os.getenv("CHROMA_PERSIST_DIR")
+    # Optional persistence directory for Chroma (disabled when persist=False)
+    persist_dir = os.getenv("CHROMA_PERSIST_DIR") if persist else None
 
     # Chunking params (allow overrides via env)
     try:
@@ -85,8 +85,8 @@ def run_ingestion_pipeline() -> object:
     except Exception:
         k = 4
 
-    # 1) Load raw documents
-    docs = load_documents(pdf_path)
+    # 1) Load raw documents (skip dedoc — requires a running dedoc server)
+    docs = load_documents(pdf_path, prefer_dedoc=False)
 
     # 2) Create a token-aware splitter and split documents into chunks
     splitter = get_text_splitter(tokenizer_name or "gpt2", chunk_size=chunk_size, chunk_overlap=chunk_overlap)
