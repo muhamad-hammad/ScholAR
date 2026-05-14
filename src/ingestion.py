@@ -19,7 +19,7 @@ def _set_source(docs: List[Document], pdf_path: str) -> List[Document]:
     return docs
 
 
-def load_documents(pdf_path: str, prefer_dedoc: bool = True) -> List[Document]:
+def load_documents(pdf_path: str, prefer_dedoc: bool = False) -> List[Document]:
     """
     Load and parse PDF research documents with structure preservation.
 
@@ -99,28 +99,39 @@ def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_dir
     total = len(docs)
     num_batches = max(1, math.ceil(total / batch_size))
 
-    try:
+    def _build(persist_dir):
         first_batch = docs[:batch_size]
         if total > batch_size:
             print(f"Embedding batch 1/{num_batches}...")
-
-        if persist_directory:
-            vectordb = Chroma.from_documents(documents=first_batch, embedding=embeddings, persist_directory=persist_directory)
+        if persist_dir:
+            vdb = Chroma.from_documents(documents=first_batch, embedding=embeddings, persist_directory=persist_dir)
         else:
-            vectordb = Chroma.from_documents(documents=first_batch, embedding=embeddings)
-
+            vdb = Chroma.from_documents(documents=first_batch, embedding=embeddings)
         for i, start in enumerate(range(batch_size, total, batch_size), 2):
             print(f"Embedding batch {i}/{num_batches}...")
-            vectordb.add_documents(docs[start:start + batch_size])
-
-        if persist_directory:
+            vdb.add_documents(docs[start:start + batch_size])
+        if persist_dir:
             try:
-                vectordb.persist()
+                vdb.persist()
             except Exception:
                 pass
+        return vdb
 
-        return vectordb
+    try:
+        return _build(persist_directory)
     except Exception as e:
+        # Dimension mismatch: stale collection used a different embedding model.
+        # Wipe the persist directory and retry once without persistence.
+        if persist_directory and "dimension" in str(e).lower():
+            import shutil
+            try:
+                shutil.rmtree(persist_directory, ignore_errors=True)
+            except Exception:
+                pass
+            try:
+                return _build(None)
+            except Exception as e2:
+                raise RuntimeError(f"Failed to create Chroma vectorstore: {e2}") from e2
         raise RuntimeError(f"Failed to create Chroma vectorstore: {e}") from e
 
 
