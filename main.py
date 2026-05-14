@@ -10,12 +10,18 @@ def _activate_langsmith() -> None:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGCHAIN_API_KEY"] = api_key
 
-# Imports for LangChain / LangGraph components and local modules
-from langchain_core.documents import Document
-from src.core_config import load_hf_pipeline, load_hf_embeddings, load_llm, ResearchRAGState
-from src.ingestion import load_documents, get_text_splitter, create_vectorstore, get_retriever
-from src.workflow_builder import build_research_rag_graph
-from src.graph_nodes import (
+# These imports follow _activate_langsmith intentionally — env vars must be set
+# before langchain modules are imported so tracing is picked up at init time.
+from langchain_core.documents import Document  # noqa: E402
+from src.core_config import load_hf_embeddings, load_llm  # noqa: E402
+from src.ingestion import (  # noqa: E402
+    load_documents,
+    get_text_splitter,
+    create_vectorstore,
+    get_retriever,
+)
+from src.workflow_builder import build_research_rag_graph  # noqa: E402
+from src.graph_nodes import (  # noqa: E402
     router_node,
     retrieval_node,
     generation_node,
@@ -188,6 +194,11 @@ def run_rag_once(
     Returns:
         (final_answer: str, state: ResearchRAGState)
     """
+    if not (user_query or "").strip():
+        raise ValueError("user_query must be a non-empty string.")
+    if compiled_graph is None and retriever is None:
+        raise ValueError("A retriever must be provided when no compiled_graph is given.")
+
     history = list(conversation_history or [])
 
     # Build initial state, seeding conversation history for the generation node
@@ -225,6 +236,11 @@ def run_rag_once(
         raise ValueError("No retriever available for procedural execution. Provide a retriever or a runnable compiled_graph.")
 
     state = retrieval_node(state)
+
+    if state.get("_skip_generation"):
+        answer = state.get("final_answer")
+        _append_history(state, user_query, answer)
+        return answer, state
 
     next_node = determine_next_node(state)
     if next_node == "summarization_node":
