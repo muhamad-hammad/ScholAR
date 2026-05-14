@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import List
 from src.graph_nodes import (
     router_node,
     determine_next_node,
@@ -44,7 +44,7 @@ class StubLLM:
 
 def test_summary_and_qna_paths_work_with_stubs():
     # Prepare fake documents
-    docs = [FakeDoc("This is a test paragraph about method and results.", source="paper.pdf")] 
+    docs = [FakeDoc("This is a test paragraph about method and results.", source="paper.pdf")]
 
     # SUMMARY path
     state = {"user_query": "Please summarize the paper", "meta": {}}

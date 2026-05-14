@@ -41,7 +41,6 @@ if "langchain_core.documents" not in sys.modules:
 if "langchain_core.embeddings" not in sys.modules:
     sys.modules["langchain_core.embeddings"] = SimpleNamespace(Embeddings=object)
 
-import pytest
 
 import src.ingestion as ingestion
 
@@ -126,7 +125,7 @@ def test_create_vectorstore_calls_chroma_and_persist(monkeypatch):
     fake_embeddings = SimpleNamespace(name="fake-emb")
     docs = [FakeDoc("a"), FakeDoc("b")]
 
-    vs = ingestion.create_vectorstore(docs, fake_embeddings, persist_directory="/tmp/chroma")
+    ingestion.create_vectorstore(docs, fake_embeddings, persist_directory="/tmp/chroma")
     # Confirm the fake was used and persist called
     assert recorded['docs'] == docs
     assert recorded['embedding'] is fake_embeddings

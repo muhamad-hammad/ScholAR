@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import List
 from main import run_rag_once
 
 
