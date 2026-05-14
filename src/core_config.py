@@ -82,17 +82,17 @@ def load_llm(provider: str = None, model_id: str = None):
         return _openai_call
 
     if provider in ("google", "gemini"):
-        api_key = os.getenv("GOOGLE_API_KEY", "")
+        api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             raise ValueError(
-                "GOOGLE_API_KEY environment variable is not set or is empty. "
-                "Set it before using the google provider."
+                "GEMINI_API_KEY environment variable is not set or is empty. "
+                "Set it before using the gemini provider."
             )
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
         except ImportError as e:
             raise ImportError("langchain-google-genai is required for the google provider.") from e
-        model = model_id or "gemini-1.5-flash"
+        model = model_id or "gemini-2.0-flash"
         chat = ChatGoogleGenerativeAI(model=model, google_api_key=api_key)
 
         def _google_call(prompt: str) -> str:
