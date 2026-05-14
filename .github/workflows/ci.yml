@@ -49,5 +49,5 @@ jobs:
           python -m pytest -q
       - name: Lint and type-check
         run: |
-          python -m ruff check . --select F,E,W
+          python -m ruff check .
           python -m mypy --ignore-missing-imports .
