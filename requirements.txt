@@ -1,5 +1,4 @@
-# Optional user-facing requirements (for running the Streamlit app)
-streamlit
+# Runtime dependencies
 python-dotenv
 langchain-core
 langchain-community
@@ -16,5 +15,9 @@ chromadb
 unstructured
 pypdf
 pymupdf
+pillow
+sentence-transformers
+fastapi
+uvicorn[standard]
 pytest
 flake8
