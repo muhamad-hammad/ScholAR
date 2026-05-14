@@ -6,7 +6,6 @@ langgraph
 pydantic
 huggingface-hub
 transformers
-tensorflow
 langchain-huggingface
 langchain-openai
 langchain-google-genai
