@@ -24,7 +24,6 @@ chroma_db/
 .env.*
 !.env.example
 
-data/
 
 tests/
 scripts/
