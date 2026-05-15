@@ -1,5 +1,14 @@
 import type { Message, PdfImage, UsageMode } from "./types";
 
+// When NEXT_PUBLIC_BACKEND_URL is set (production), call Render directly so the
+// browser waits as long as needed — bypassing Vercel's proxy timeout on slow
+// free-tier cold starts and heavy ingestion jobs.
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+
+function apiUrl(path: string): string {
+  return BACKEND ? `${BACKEND}${path}` : `/api${path}`;
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   if (res.ok) return res.json() as Promise<T>;
   let detail: string | undefined;
@@ -17,7 +26,7 @@ export async function ingestPdf(
 ): Promise<{ ok: boolean; filename: string }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/ingest", { method: "POST", body: form });
+  const res = await fetch(apiUrl("/ingest"), { method: "POST", body: form });
   return handleResponse(res);
 }
 
@@ -29,7 +38,7 @@ export async function queryRag(args: {
   apiKey: string;
   usageMode: UsageMode;
 }): Promise<{ answer: string; conversationHistory: Message[] }> {
-  const res = await fetch("/api/query", {
+  const res = await fetch(apiUrl("/query"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -57,7 +66,7 @@ export async function summarize(args: {
   apiKey: string;
   usageMode: UsageMode;
 }): Promise<{ summary: string }> {
-  const res = await fetch("/api/summarize", {
+  const res = await fetch(apiUrl("/summarize"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -75,12 +84,12 @@ export async function getEnvConfig(): Promise<{
   model_id: string;
   has_key: boolean;
 }> {
-  const res = await fetch("/api/env-config");
+  const res = await fetch(apiUrl("/env-config"));
   return handleResponse(res);
 }
 
 export async function ingestDemo(): Promise<{ ok: boolean; filename: string }> {
-  const res = await fetch("/api/ingest-demo", { method: "POST" });
+  const res = await fetch(apiUrl("/ingest-demo"), { method: "POST" });
   return handleResponse(res);
 }
 
@@ -89,6 +98,6 @@ export async function extractImages(
 ): Promise<{ images: PdfImage[] }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/images", { method: "POST", body: form });
+  const res = await fetch(apiUrl("/images"), { method: "POST", body: form });
   return handleResponse(res);
 }
