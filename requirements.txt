@@ -18,5 +18,3 @@ pillow
 sentence-transformers
 fastapi
 uvicorn[standard]
-pytest
-flake8
