@@ -21,12 +21,19 @@ async function handleResponse<T>(res: Response): Promise<T> {
   throw new Error(detail ?? `HTTP ${res.status} ${res.statusText}`);
 }
 
+function wrapFetchError(err: unknown): never {
+  if (err instanceof TypeError && err.message === "Failed to fetch") {
+    throw new Error("Backend is starting up — please wait 30 seconds and try again.");
+  }
+  throw err;
+}
+
 export async function ingestPdf(
   file: File
 ): Promise<{ ok: boolean; filename: string }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(apiUrl("/ingest"), { method: "POST", body: form });
+  const res = await fetch(apiUrl("/ingest"), { method: "POST", body: form }).catch(wrapFetchError);
   return handleResponse(res);
 }
 
@@ -49,7 +56,7 @@ export async function queryRag(args: {
       api_key: args.apiKey,
       usage_mode: args.usageMode,
     }),
-  });
+  }).catch(wrapFetchError);
   const data = await handleResponse<{
     answer: string;
     conversation_history: Message[];
@@ -75,7 +82,7 @@ export async function summarize(args: {
       api_key: args.apiKey,
       usage_mode: args.usageMode,
     }),
-  });
+  }).catch(wrapFetchError);
   return handleResponse(res);
 }
 
@@ -84,12 +91,12 @@ export async function getEnvConfig(): Promise<{
   model_id: string;
   has_key: boolean;
 }> {
-  const res = await fetch(apiUrl("/env-config"));
+  const res = await fetch(apiUrl("/env-config")).catch(wrapFetchError);
   return handleResponse(res);
 }
 
 export async function ingestDemo(): Promise<{ ok: boolean; filename: string }> {
-  const res = await fetch(apiUrl("/ingest-demo"), { method: "POST" });
+  const res = await fetch(apiUrl("/ingest-demo"), { method: "POST" }).catch(wrapFetchError);
   return handleResponse(res);
 }
 
@@ -98,6 +105,6 @@ export async function extractImages(
 ): Promise<{ images: PdfImage[] }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(apiUrl("/images"), { method: "POST", body: form });
+  const res = await fetch(apiUrl("/images"), { method: "POST", body: form }).catch(wrapFetchError);
   return handleResponse(res);
 }

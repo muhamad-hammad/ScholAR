@@ -169,18 +169,16 @@ def load_llm(provider: str = None, model_id: str = None):
     return load_hf_pipeline(model_id)
 
 
+_embeddings_cache: dict = {}
+
+
 def load_hf_embeddings(model_id: str):
-    """Return a LangChain HuggingFaceEmbeddings instance for `model_id`.
-
-    Falls back to the EMBEDDING_MODEL_ID env var when `model_id` is not provided.
-    """
-    model = model_id or os.getenv("EMBEDDING_MODEL_ID")
-    if not model:
-        raise ValueError("No embedding model specified. Set EMBEDDING_MODEL_ID or pass model_id.")
-
-    try:
-        from langchain_huggingface.embeddings import HuggingFaceEmbeddings
-    except Exception as e:
-        raise ImportError("langchain_huggingface is required for Hugging Face embeddings.") from e
-
-    return HuggingFaceEmbeddings(model_name=model)
+    """Return a cached FastEmbedEmbeddings instance for `model_id` (ONNX-based, memory-light)."""
+    model = model_id or os.getenv("EMBEDDING_MODEL_ID") or "BAAI/bge-small-en-v1.5"
+    if model not in _embeddings_cache:
+        try:
+            from langchain_community.embeddings import FastEmbedEmbeddings
+        except ImportError as e:
+            raise ImportError("fastembed is required. Install it with `pip install fastembed`.") from e
+        _embeddings_cache[model] = FastEmbedEmbeddings(model_name=model)
+    return _embeddings_cache[model]
