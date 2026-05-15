@@ -25,16 +25,34 @@ function wrapFetchError(err: unknown): never {
   if (err instanceof TypeError && err.message === "Failed to fetch") {
     throw new Error("Backend is starting up — please wait 30 seconds and try again.");
   }
+  if (err instanceof DOMException && err.name === "AbortError") {
+    throw new Error(
+      "Ingestion is taking too long. The backend may be downloading the embedding model " +
+        "for the first time. Please wait 30 seconds and try again."
+    );
+  }
   throw err;
 }
+
+const INGEST_TIMEOUT_MS = 370_000; // slightly longer than the server-side 360 s
 
 export async function ingestPdf(
   file: File
 ): Promise<{ ok: boolean; filename: string }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(apiUrl("/ingest"), { method: "POST", body: form }).catch(wrapFetchError);
-  return handleResponse(res);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), INGEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(apiUrl("/ingest"), {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    }).catch(wrapFetchError);
+    return handleResponse(res);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function queryRag(args: {

@@ -47,8 +47,27 @@ def run_ingestion_pipeline(persist: bool = True) -> object:
     if not pdf_path:
         raise ValueError("PDF_INPUT_PATH must be set in the environment or passed to run_ingestion_pipeline")
 
-    # Resolve tokenizer and embedding model ids from env
-    tokenizer_name = os.getenv("TOKENIZER_NAME") or os.getenv("LLM_MODEL_ID") or os.getenv("EMBEDDING_MODEL_ID")
+    def _is_hf_model_id(name: str) -> bool:
+        """Return True only for clean HuggingFace org/repo IDs.
+
+        Cloud-provider slugs like 'llama-3.3-70b-versatile' (no slash) or
+        'meta-llama/llama-3.3-8b-instruct:free' (has colon) are rejected so we
+        don't attempt to download non-existent or gated tokenizers.
+        """
+        if not name:
+            return False
+        parts = name.split("/")
+        return len(parts) == 2 and all(parts) and ":" not in name
+
+    # Resolve tokenizer: prefer explicit override, then the embedding model (always a
+    # real HF model), then the LLM model only when it's a plain HF org/repo slug.
+    tokenizer_name = os.getenv("TOKENIZER_NAME") or ""
+    if not tokenizer_name:
+        for candidate_env in ("EMBEDDING_MODEL_ID", "LLM_MODEL_ID"):
+            candidate = os.getenv(candidate_env, "")
+            if _is_hf_model_id(candidate):
+                tokenizer_name = candidate
+                break
     embedding_model_id = os.getenv("EMBEDDING_MODEL_ID")
 
     # Optional persistence directory for Chroma (disabled when persist=False)

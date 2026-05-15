@@ -1,6 +1,9 @@
+import asyncio
 import base64
+import functools
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, UploadFile
@@ -15,6 +18,11 @@ try:
     _activate_langsmith()
 except Exception:
     pass
+
+# Prevent HuggingFace Hub from hanging indefinitely on slow/missing model downloads
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+
+_executor = ThreadPoolExecutor(max_workers=2)
 
 app = FastAPI()
 
@@ -184,17 +192,44 @@ def env_config():
     return {"provider": provider, "model_id": model_id, "has_key": has_key}
 
 
+_INGEST_TIMEOUT = 360  # seconds — generous for cold-start model downloads
+
+
+async def _run_ingestion(pdf_path: str) -> object:
+    """Run the blocking ingestion pipeline in a thread pool with a timeout."""
+    os.environ["PDF_INPUT_PATH"] = pdf_path
+    loop = asyncio.get_event_loop()
+    try:
+        retriever = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor, functools.partial(run_ingestion_pipeline, persist=False)
+            ),
+            timeout=_INGEST_TIMEOUT,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Ingestion timed out after {_INGEST_TIMEOUT}s. "
+                "The backend may be downloading the embedding model for the first time — "
+                "please wait 30 seconds and try again."
+            ),
+        ) from exc
+    return retriever
+
+
 @app.post("/ingest-demo")
 async def ingest_demo():
     if not os.path.exists(_DEMO_PAPER_PATH):
         raise HTTPException(status_code=404, detail="Demo paper not found at data/research_paper.pdf.")
     try:
-        os.environ["PDF_INPUT_PATH"] = _DEMO_PAPER_PATH
-        retriever = run_ingestion_pipeline(persist=False)
+        retriever = await _run_ingestion(_DEMO_PAPER_PATH)
         _state["retriever"] = retriever
         _state["ingested_file"] = "research_paper.pdf"
         _state["compiled_graph"] = None
         return {"ok": True, "filename": "research_paper.pdf"}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -208,12 +243,13 @@ async def ingest(file: UploadFile):
             tmp.write(await file.read())
             tmp_path = tmp.name
 
-        os.environ["PDF_INPUT_PATH"] = tmp_path
-        retriever = run_ingestion_pipeline(persist=False)
+        retriever = await _run_ingestion(tmp_path)
         _state["retriever"] = retriever
         _state["ingested_file"] = file.filename
         _state["compiled_graph"] = None
         return {"ok": True, "filename": file.filename}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
