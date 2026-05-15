@@ -22,4 +22,4 @@ EXPOSE 8000
 
 HEALTHCHECK CMD curl --fail http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8000}
