@@ -3,14 +3,9 @@
 import math
 import os
 from typing import List, Any
-from langchain_community.document_loaders import DedocFileLoader
-from langchain_text_splitters import TokenTextSplitter, RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_core.documents import Document
-from langchain_core.embeddings import Embeddings
 
 
-def _set_source(docs: List[Document], pdf_path: str) -> List[Document]:
+def _set_source(docs: List[Any], pdf_path: str) -> List[Any]:
     for d in docs:
         if not getattr(d, "metadata", None):
             d.metadata = {"source": pdf_path}
@@ -19,7 +14,7 @@ def _set_source(docs: List[Document], pdf_path: str) -> List[Document]:
     return docs
 
 
-def load_documents(pdf_path: str, prefer_dedoc: bool = False) -> List[Document]:
+def load_documents(pdf_path: str, prefer_dedoc: bool = False) -> List[Any]:
     """
     Load and parse PDF research documents with structure preservation.
 
@@ -30,6 +25,7 @@ def load_documents(pdf_path: str, prefer_dedoc: bool = False) -> List[Document]:
     """
     if prefer_dedoc:
         try:
+            from langchain_community.document_loaders import DedocFileLoader
             loader = DedocFileLoader(pdf_path, with_tables=True)
             docs = loader.load()
             return _set_source(docs, pdf_path)
@@ -52,7 +48,7 @@ def load_documents(pdf_path: str, prefer_dedoc: bool = False) -> List[Document]:
     return _set_source(docs, pdf_path)
 
 
-def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap: int = 128) -> TokenTextSplitter:
+def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap: int = 128) -> Any:
     """
     Instantiate a TokenTextSplitter tied to the Hugging Face tokenizer.
 
@@ -67,6 +63,7 @@ def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap
     # Lazy import tokenizer to avoid network/IO at module import time
     try:
         from transformers import AutoTokenizer
+        from langchain_text_splitters import TokenTextSplitter
 
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
         # Use the HF-aware TokenTextSplitter when available
@@ -79,10 +76,11 @@ def get_text_splitter(tokenizer_name: str, chunk_size: int = 1024, chunk_overlap
             return TokenTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     except Exception:
         # If HF tokenizer isn't available locally, fallback to a character splitter
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 
-def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_directory: str = None) -> Chroma:
+def create_vectorstore(docs: List[Any], embeddings: Any, persist_directory: str = None) -> Any:
     """
     Index split documents into a ChromaDB vector store.
 
@@ -95,6 +93,8 @@ def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_dir
       to enable provenance reporting in generation_node.
     - Return the instantiated Chroma vectorstore object.
     """
+    from langchain_community.vectorstores import Chroma
+
     batch_size = max(1, int(os.getenv("EMBED_BATCH_SIZE", "64")))
     total = len(docs)
     num_batches = max(1, math.ceil(total / batch_size))
@@ -135,7 +135,7 @@ def create_vectorstore(docs: List[Document], embeddings: Embeddings, persist_dir
         raise RuntimeError(f"Failed to create Chroma vectorstore: {e}") from e
 
 
-def get_retriever(vectorstore: Chroma, k: int = 4) -> Any:
+def get_retriever(vectorstore: Any, k: int = 4) -> Any:
     """
     Convert a Chroma vectorstore into a LangChain Retriever configured for top-k.
 

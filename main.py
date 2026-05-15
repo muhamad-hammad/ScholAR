@@ -10,25 +10,6 @@ def _activate_langsmith() -> None:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGCHAIN_API_KEY"] = api_key
 
-# These imports follow _activate_langsmith intentionally — env vars must be set
-# before langchain modules are imported so tracing is picked up at init time.
-from langchain_core.documents import Document  # noqa: E402
-from src.core_config import load_hf_embeddings, load_llm  # noqa: E402
-from src.ingestion import (  # noqa: E402
-    load_documents,
-    get_text_splitter,
-    create_vectorstore,
-    get_retriever,
-)
-from src.workflow_builder import build_research_rag_graph  # noqa: E402
-from src.graph_nodes import (  # noqa: E402
-    router_node,
-    retrieval_node,
-    generation_node,
-    summarization_node,
-    determine_next_node,
-)
-
 # Application entry point for the Agentic Research RAG system.
 # This file contains the high-level orchestration signatures and docstring-level comments
 # explaining how the runtime should be wired. No implementation logic is included here.
@@ -55,6 +36,10 @@ def run_ingestion_pipeline(persist: bool = True) -> object:
     Returns:
         retriever: A configured LangChain Retriever backed by ChromaDB
     """
+    from langchain_core.documents import Document
+    from src.core_config import load_hf_embeddings
+    from src.ingestion import load_documents, get_text_splitter, create_vectorstore, get_retriever
+
     # Load environment variables from .env if present
     load_dotenv()
 
@@ -227,6 +212,13 @@ def run_rag_once(
                     break
 
     # 2) Fallback procedural execution using graph node functions
+    from src.graph_nodes import (
+        router_node,
+        retrieval_node,
+        generation_node,
+        summarization_node,
+        determine_next_node,
+    )
     state = router_node(state)
 
     if state.get("retriever") is None and retriever is not None:
@@ -285,6 +277,9 @@ def main() -> None:
     - When running locally on GPU with TensorFlow, verify TensorFlow, CUDA and
       cuDNN versions are compatible with your GPU and the installed TensorFlow wheel.
     """
+    from src.core_config import load_llm
+    from src.workflow_builder import build_research_rag_graph
+
     # Load env
     load_dotenv()
     _activate_langsmith()
