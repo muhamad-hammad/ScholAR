@@ -1,8 +1,9 @@
 import type { Message, PdfImage, UsageMode } from "./types";
 
-// When NEXT_PUBLIC_BACKEND_URL is set (production), call Render directly so the
-// browser waits as long as needed — bypassing Vercel's proxy timeout on slow
-// free-tier cold starts and heavy ingestion jobs.
+// When NEXT_PUBLIC_BACKEND_URL is set (production), call the backend directly so
+// the browser waits as long as needed — bypassing Vercel's proxy timeout on slow
+// cold starts and heavy ingestion jobs. Production backend lives on Hugging Face
+// Spaces (Docker SDK).
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
 function apiUrl(path: string): string {
