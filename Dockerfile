@@ -16,10 +16,14 @@ COPY api/ ./api/
 COPY main.py .
 COPY data/ ./data/
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app \
+    HF_HOME=/tmp/huggingface \
+    TRANSFORMERS_CACHE=/tmp/huggingface \
+    HF_HUB_CACHE=/tmp/huggingface \
+    XDG_CACHE_HOME=/tmp/cache
 
-EXPOSE 8000
+EXPOSE 7860
 
-HEALTHCHECK CMD curl --fail http://localhost:8000/health || exit 1
+HEALTHCHECK CMD curl --fail http://localhost:7860/health || exit 1
 
-CMD uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-7860}
