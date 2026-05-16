@@ -8,65 +8,107 @@ app_port: 7860
 pinned: false
 ---
 
-# ResearchPaperReaderRAG
+# ScholAR — Agentic RAG for Research Papers
 
 [![CI](https://github.com/muhamad-hammad/ResearchPaperReaderRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/muhamad-hammad/ResearchPaperReaderRAG/actions/workflows/ci.yml)
 
-Lightweight, agentic Retrieval-Augmented Generation (RAG) system for scientific research papers, built on LangChain + LangGraph with a Streamlit UI.
+**Live demo: https://ask-scholar.vercel.app/**
 
-## Goals
+ScholAR is an agentic Retrieval-Augmented Generation (RAG) system for scientific papers. Upload a PDF, then ask targeted questions or generate a structured summary — answers are grounded in retrieved passages from the paper.
 
-- Zero-cost, open-source architecture using LangChain, LangGraph, LangSmith (free tier), and Hugging Face models (local or free endpoints).
-- Two primary workflows: full-document summarization and targeted Q&A.
+Built on **LangChain + LangGraph** for the agent workflow, **ChromaDB** for vector retrieval, **FastAPI** for the backend, and **Next.js + Tailwind** for the UI.
+
+## Architecture
+
+```
+┌──────────────────────┐        ┌──────────────────────────────┐
+│  Next.js frontend    │  HTTP  │  FastAPI backend             │
+│  (Vercel)            │ ─────► │  (Hugging Face Spaces)       │
+│  ask-scholar.vercel  │        │  LangGraph + Chroma + HF     │
+└──────────────────────┘        └──────────────────────────────┘
+```
+
+- **Frontend** ([web-next/](web-next/)): Next.js 14 app deployed on Vercel. Provides PDF upload, chat, summary, and image-extraction views.
+- **Backend** ([api/server.py](api/server.py)): FastAPI service deployed as a Docker Space on Hugging Face. Handles ingestion, retrieval, generation, and figure extraction.
+- **Agent workflow** ([src/](src/)): LangGraph router decides between summarization and Q&A paths, with retrieval and grounded generation nodes.
+- **LLM providers**: Bring-your-own-key support for OpenAI, Gemini, Groq, OpenRouter, and Grok (xAI). Configured at request time.
+
+## Features
+
+- **PDF ingestion** — token-aware chunking, HF embeddings, in-memory Chroma index per session.
+- **Grounded Q&A** — multi-turn chat that retrieves relevant passages before answering.
+- **Structured summaries** — motivation, methods, findings, conclusions.
+- **Figure extraction** — pulls research figures from the PDF (skips logos/icons via colour-diversity heuristic).
+- **Bring-your-own-key** — pick a provider and paste an API key in the UI; nothing is stored server-side.
+- **Demo paper** — one-click load of a bundled paper for quick exploration.
 
 ## Project Structure
 
 ```
-src/            — Core library (ingestion, graph nodes, LLM config, workflow)
+api/            — FastAPI backend (server.py)
+src/            — Agent core (ingestion, graph nodes, LLM config, workflow)
+web-next/       — Next.js 14 frontend (deployed to Vercel)
 tests/          — Pytest suite with CI-safe mocks
-web/            — Streamlit UI
 scripts/        — CLI tools and launch scripts
-data/           — Input PDF research papers
-.github/        — CI/CD workflows
+data/           — Bundled demo PDF
+Dockerfile      — Backend image (used by HF Spaces)
 ```
 
-## Getting Started (PowerShell)
+## Running Locally
 
-1. Create and activate a virtual environment:
+### Backend (FastAPI)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-2. Install dependencies:
-
-```powershell
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+
+uvicorn api.server:app --port 8000 --reload
 ```
 
-3. Configure environment variables:
-   - Copy `.env` and fill in your API keys (`HUGGINGFACEHUB_API_TOKEN`, `LANGSMITH_API_KEY`, model IDs).
-   - Ensure `PDF_INPUT_PATH` points to a valid PDF (default: `./data/research_paper.pdf`).
-
-4. Run the application:
+### Frontend (Next.js)
 
 ```powershell
-python main.py
+cd web-next
+npm install
+npm run dev
 ```
 
-## Streamlit UI
+Open http://localhost:3000. The frontend proxies `/api/*` to the local FastAPI server by default.
+
+### Both at once
+
+From `web-next/`:
 
 ```powershell
-.\scripts\run_app.ps1
+npm run dev:all
 ```
 
-Or directly:
+## Environment Variables
 
-```powershell
-streamlit run web/streamlit_app.py
-```
+Backend (`.env` at repo root):
+
+| Variable | Purpose |
+|---|---|
+| `LLM_PROVIDER` | Default provider (`openai`, `gemini`, `groq`, `openrouter`, `grok`) |
+| `LLM_MODEL_ID` | Default model id for the provider |
+| `EMBEDDING_MODEL_ID` | HF embedding model (e.g. `sentence-transformers/all-MiniLM-L6-v2`) |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | Splitter tuning (defaults: 1024 / 128) |
+| `RETRIEVER_K` | Top-k chunks to retrieve (default: 4) |
+| `LANGSMITH_API_KEY` + `LANGSMITH_TRACING` | Optional LangSmith tracing |
+| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY` | Provider keys (only needed if not passed from the UI) |
+
+Frontend (`web-next/.env.local`):
+
+| Variable | Purpose |
+|---|---|
+| `NEXT_PUBLIC_BACKEND_URL` | Production backend URL. Leave empty for local dev (uses Next.js proxy). |
+
+## Deployment
+
+- **Backend** → Hugging Face Spaces (Docker SDK). The repo root [Dockerfile](Dockerfile) is the build context; the YAML frontmatter at the top of this README is the Spaces config.
+- **Frontend** → Vercel. Set `NEXT_PUBLIC_BACKEND_URL` to the Spaces URL so the browser calls the backend directly (avoids Vercel's proxy timeout on cold starts).
 
 ## CLI Usage
 
@@ -74,25 +116,19 @@ streamlit run web/streamlit_app.py
 python scripts/run_single_query.py --pdf data/research_paper.pdf --query "Summarize the paper"
 ```
 
-## Running Tests
+## Testing
 
 ```powershell
 pytest -q
 ```
 
-For CI (minimal deps, no heavy ML libraries):
+CI-only deps (no heavy ML libs):
 
 ```powershell
 pip install -r requirements-ci.txt
 pytest -q
 ```
 
-## TensorFlow Notes
-
-This project supports TensorFlow for local model execution. If you have an NVIDIA GPU, install a TensorFlow wheel compatible with your CUDA/cuDNN versions. For CPU-only setups, use `tensorflow-cpu`.
-
-`tensorflow-text` is optional and does not publish wheels for every Python/OS combination. If it fails to install, use a supported Python version (3.10/3.11) or rely on the pure-Python fallback.
-
 ## License
 
-Provided for development. Ensure any models or data you download comply with their respective licenses.
+Provided for development and educational use. Ensure any models or data you download comply with their respective licenses.
